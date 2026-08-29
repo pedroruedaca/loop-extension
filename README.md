@@ -78,6 +78,10 @@ id: see `dev-extension-id.txt`. Set that value as
 `NEXT_PUBLIC_LOOP_EXTENSION_ID` in `../loop/.env.local` so Loop's frontend
 knows which extension to message.
 
+Confirmed 2026-08-29: loading `dist/` unpacked reproduces this exact id
+(`pkmlfilbcbgjdaihkadpgpgimalbjlfj`) every time, as expected from the pinned
+`key` — no drift across reloads.
+
 ## Before shipping past localhost
 
 `manifest.json`'s `host_permissions` and `externally_connectable.matches`
@@ -92,30 +96,38 @@ Once published to the Chrome Web Store, the store assigns its own id
 (ignoring the `key` field) — swap `NEXT_PUBLIC_LOOP_EXTENSION_ID` to that
 real id at that point.
 
-## Open items / not independently verified this session
+## Verified live 2026-08-29
 
-- **Cart response field names**: `lib/mercadona-api.ts`'s parsing of a `GET`
-  cart response (`line.product.id` vs `line.product_id`, `summary.total`) is
-  transcribed from Loop's project memory (itself read from `mercadona-cli`'s
-  Go source, not from a live capture this session) and defensively
-  multi-path, but not exercised against a real account. First live test
-  should watch for `driftDetected`-worthy surprises here.
-- **Warehouse id discovery**: assumes some authenticated call the SPA makes
-  organically still returns `x-customer-wh` — that behavior was originally
-  observed on the now-retired postal-code endpoint, not re-confirmed on
-  whatever calls the SPA fires by default when a session is already logged
-  in. If it never shows up, cart calls need to be tried without `wh` first
-  (unconfirmed whether that's accepted) before adding an explicit request
-  for it.
+Both jobs were exercised end-to-end against a real, already-logged-in
+Mercadona account (`dist/` loaded unpacked, Loop's dev server running
+locally):
+
+- **Link**: dashboard flipped to "linked" after `page-hook.ts` captured a
+  real session off the SPA's own traffic — no guessed storage key needed.
+- **Confirm & Prepare**: one throwaway real product (Mercadona id `19731`,
+  "Sal fina Hacendado", 0,40€) added via a test Loop list. Confirming moved
+  the real cart from 25 items/62,30€ to 26/62,70€ — exactly the one line
+  added, every other line untouched, proving `foldCartLines` folds correctly
+  against a real multi-item cart rather than replacing it. The item was then
+  removed via Mercadona's own product page to restore the cart exactly.
+
+This confirms the two riskiest unknowns from the original build (cart
+response parsing in `lib/mercadona-api.ts`, and whether `x-customer-wh`
+actually shows up on organic traffic) both held up in practice — see
+`[[project-loop]]` in Loop's project memory for the full verification note.
+
+## Remaining open items
+
 - **No icons** — `manifest.json` omits `icons`; Chrome will show a default
   puzzle-piece action icon until one's added. Cosmetic only.
 - **Opportunistic product-cache sync** (search results feeding
   `POST /api/product-cache` in Loop while a user just browses Mercadona
   normally) is a separate, not-yet-built follow-up — this build only does
   the two explicit-click jobs above.
-- **End-to-end**: nothing here has been loaded into a real Chrome profile
-  against a real logged-in Mercadona account yet. `npm run build` and
-  `tsc --noEmit` are clean, but that only proves the code compiles and
-  bundles — the actual link → confirm-prepare flow needs a live run with
-  Loop's dev server (`npm run dev` in `../loop`) and a real Mercadona
-  session before this is trustworthy.
+- **Error/`partial` paths unverified**: only the success path of
+  Confirm & Prepare has been seen live. A failed or partial Mercadona write
+  (e.g. a rejected product id, a mid-flight token expiry) hasn't been
+  exercised against a real account yet.
+- Address/delivery-slot selection is still out of scope — unchanged, still
+  blocked on a live DevTools capture of Mercadona's checkout API (see
+  "What it does" above).
