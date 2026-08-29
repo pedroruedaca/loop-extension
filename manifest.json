@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Loop for Mercadona",
+  "version": "0.1.0",
+  "description": "Links Loop's recurring grocery list to your real Mercadona account, acting entirely in your own browser session.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyKNgq297v5x2pNlBeRGOtCIBv9xAg/BzdivfRdcco8pkDOt2MjPRX/19ekW3eFttRURZ4r1FA0/Xntawwpx4x/zDZqKdMjBgrF4insd/TDo1myAdZKvUGg6fFTPgjU6WhtzkLQ8x7QSaK3sA7lQ9LiuqBkzs2SGGyXGQXx5eY1sAL79nelm2LARrg3tfd1Wwym+1B7wvMyQg7hsB+pRFJxAm++LeAy3jab5erSGNbkqq8bpHfwtDQTAznsyHGcKVmjixsmPR8t+CaDA5YuerXsuNiaz7kDTrL/f9xXaDfVI2DUqtcMJSXXuRHgro9bHHg2Y6UIs3VgjLPcW96Fe0MQIDAQAB",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://tienda.mercadona.es/*",
+    "http://localhost:3000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://tienda.mercadona.es/*"],
+      "js": ["content/mercadona-content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://tienda.mercadona.es/*"],
+      "js": ["content/page-hook.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    }
+  ],
+  "externally_connectable": {
+    "matches": ["http://localhost:3000/*"]
+  },
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}
