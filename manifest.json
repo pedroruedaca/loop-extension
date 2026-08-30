@@ -10,7 +10,8 @@
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://tienda.mercadona.es/*",
-    "http://localhost:3000/*"
+    "http://localhost:3000/*",
+    "https://loop-one-omega.vercel.app/*"
   ],
   "content_scripts": [
     {
@@ -26,7 +27,7 @@
     }
   ],
   "externally_connectable": {
-    "matches": ["http://localhost:3000/*"]
+    "matches": ["http://localhost:3000/*", "https://loop-one-omega.vercel.app/*"]
   },
   "action": {
     "default_popup": "popup/popup.html"
