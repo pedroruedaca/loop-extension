@@ -1,13 +1,27 @@
-// Service worker. Owns the two explicit-click jobs (see [[project-loop]]):
-// linking (capture a live Mercadona session) and prepare-on-confirm (the
-// actual cart write) — never anything on a timer or on extension load. Also
-// reports outcomes straight to Loop's backend itself (not via the Loop page
-// relaying), matching the "the extension reports back" framing already
-// baked into Loop's schema comments (users.mercadonaStatus, basket_runs).
+// Service worker. Owns three explicit-click jobs (see [[project-loop]]):
+// linking (capture a live Mercadona session), prepare-on-confirm (the actual
+// cart write), and catalog sync (bulk read of categories/products) — never
+// anything on a timer or on extension load. Also reports outcomes straight
+// to Loop's backend itself (not via the Loop page relaying), matching the
+// "the extension reports back" framing already baked into Loop's schema
+// comments (users.mercadonaStatus, basket_runs).
 import { computeCartUpdates, foldCartLines } from "./lib/basket-math";
-import { reportBasketRun, reportMercadonaStatus } from "./lib/loop-api";
-import { getCart, MercadonaApiError, setCartLines } from "./lib/mercadona-api";
-import type { ConfirmPrepareResult, ContentToBackgroundMessage, LoopToExtensionMessage, MercadonaSession } from "./types";
+import { reportBasketRun, reportMercadonaStatus, upsertCatalogEntries } from "./lib/loop-api";
+import {
+  getCart,
+  getCatalogProducts,
+  getTopLevelSubcategoryIds,
+  MercadonaApiError,
+  setCartLines,
+  type CatalogProduct,
+} from "./lib/mercadona-api";
+import type {
+  ConfirmPrepareResult,
+  ContentToBackgroundMessage,
+  LoopToExtensionMessage,
+  MercadonaSession,
+  SyncCatalogResult,
+} from "./types";
 
 const MERCADONA_ORIGIN = "https://tienda.mercadona.es";
 const LINK_TIMEOUT_MS = 15_000;
@@ -125,6 +139,69 @@ async function handleConfirmPrepare(
   }
 }
 
+const CATALOG_FETCH_CONCURRENCY = 6;
+const CATALOG_PUSH_BATCH_SIZE = 200;
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+// Reads Mercadona's whole category tree and every product under it (public
+// endpoints, no session needed — see mercadona-api.ts), then bulk-upserts
+// into Loop's shared product cache. A product can be cross-listed under
+// several subcategories; de-duping by id here avoids redundant upserts.
+async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult> {
+  const session = await getStoredSession();
+  const warehouseId = session?.warehouseId ?? null;
+  try {
+    const subcategoryIds = await getTopLevelSubcategoryIds();
+    const perCategory = await mapWithConcurrency(subcategoryIds, CATALOG_FETCH_CONCURRENCY, (id) =>
+      getCatalogProducts(id, warehouseId).catch(() => [] as CatalogProduct[])
+    );
+
+    const byProductId = new Map<string, CatalogProduct>();
+    for (const products of perCategory) {
+      for (const product of products) byProductId.set(product.productId, product);
+    }
+    const allProducts = [...byProductId.values()];
+
+    for (let i = 0; i < allProducts.length; i += CATALOG_PUSH_BATCH_SIZE) {
+      const batch = allProducts.slice(i, i + CATALOG_PUSH_BATCH_SIZE);
+      await upsertCatalogEntries(
+        loopOrigin,
+        batch.map((p) => ({
+          productId: p.productId,
+          warehouseId: warehouseId ?? undefined,
+          displayName: p.displayName,
+          packaging: p.packaging,
+          imageUrl: p.imageUrl,
+          unitPriceCents: p.unitPriceCents,
+          referencePrice: p.referencePrice,
+          referenceFormat: p.referenceFormat,
+        }))
+      );
+    }
+
+    return { status: "ok", categoriesScanned: subcategoryIds.length, productsUpserted: allProducts.length };
+  } catch (err) {
+    return {
+      status: "error",
+      categoriesScanned: 0,
+      productsUpserted: 0,
+      errorMessage: err instanceof Error ? err.message : "unknown_error",
+    };
+  }
+}
+
 chrome.runtime.onMessageExternal.addListener((message: LoopToExtensionMessage, sender, sendResponse) => {
   const loopOrigin = sender.origin;
   if (!loopOrigin) return false;
@@ -141,6 +218,11 @@ chrome.runtime.onMessageExternal.addListener((message: LoopToExtensionMessage, s
 
   if (message.type === "loop:confirm-prepare") {
     void handleConfirmPrepare(loopOrigin, message.plannedBasketId, message.lines).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === "loop:sync-catalog") {
+    void handleSyncCatalog(loopOrigin).then(sendResponse);
     return true;
   }
 

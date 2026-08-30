@@ -20,3 +20,7 @@ export function reportMercadonaStatus(baseUrl: string, linked: boolean) {
 export function reportBasketRun(baseUrl: string, report: Record<string, unknown>) {
   return postJson(baseUrl, "/api/basket/runs", report);
 }
+
+export function upsertCatalogEntries(baseUrl: string, entries: Record<string, unknown>[]) {
+  return postJson(baseUrl, "/api/product-cache", { entries });
+}

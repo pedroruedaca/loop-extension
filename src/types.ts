@@ -10,7 +10,8 @@
 export type LoopToExtensionMessage =
   | { type: "loop:ping" }
   | { type: "loop:link-account" }
-  | { type: "loop:confirm-prepare"; plannedBasketId: string; lines: ConfirmPrepareLine[] };
+  | { type: "loop:confirm-prepare"; plannedBasketId: string; lines: ConfirmPrepareLine[] }
+  | { type: "loop:sync-catalog" };
 
 export type ConfirmPrepareLine = { listItemId: string; productId: string; quantity: number };
 
@@ -30,6 +31,13 @@ export type ConfirmPrepareResult = {
   responseBody?: unknown;
   cartTotalCents?: number;
   driftDetected?: boolean;
+  errorMessage?: string;
+};
+
+export type SyncCatalogResult = {
+  status: "ok" | "error";
+  categoriesScanned: number;
+  productsUpserted: number;
   errorMessage?: string;
 };
 

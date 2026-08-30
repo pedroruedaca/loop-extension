@@ -118,4 +118,92 @@ export async function setCartLines(
   return { id: cartId, lines: resultLines, totalCents: extractTotalCents(raw), raw };
 }
 
+// --- Catalog (categories + products) ---
+//
+// Unlike cart, these need no Bearer token — confirmed live against
+// https://tienda.mercadona.es/api/categories/ and documented independently
+// at https://github.com/datania/mercadona-catalog/blob/main/api.md. So
+// catalog sync works even before the account is linked; `wh` just narrows
+// pricing/availability to a real warehouse when we have one on hand.
+//
+// Shape (confirmed live, Aug 2026):
+//   GET /api/categories/            -> { results: [{ categories: [{id, name}] }] }  (top-level sections; no products yet)
+//   GET /api/categories/<id>/?wh=.. -> { categories: [{ ..., products: [...], categories: [...] }] }
+// Products can appear at any depth in that second response's nested
+// `categories[]` (Mercadona nests sub-subcategories), so extraction below
+// walks the whole tree rather than assuming a fixed depth.
+
+async function getJson(url: string): Promise<unknown> {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  if (!response.ok) throw new MercadonaApiError(response.status, await response.text().catch(() => null));
+  return response.json();
+}
+
+function categoryDetailUrl(id: number, warehouseId: string | null) {
+  const params = new URLSearchParams({ lang: "es" });
+  if (warehouseId) params.set("wh", warehouseId);
+  return `${MERCADONA_BASE_URL}/api/categories/${id}/?${params.toString()}`;
+}
+
+export type CatalogProduct = {
+  productId: string;
+  displayName: string;
+  packaging: string | null;
+  imageUrl: string | null;
+  unitPriceCents: number | null;
+  referencePrice: string | null;
+  referenceFormat: string | null;
+};
+
+export async function getTopLevelSubcategoryIds(): Promise<number[]> {
+  const raw = (await getJson(`${MERCADONA_BASE_URL}/api/categories/`)) as {
+    results?: { categories?: { id: number }[] }[];
+  };
+  const ids: number[] = [];
+  for (const section of raw.results ?? []) {
+    for (const sub of section.categories ?? []) ids.push(sub.id);
+  }
+  return ids;
+}
+
+function parsePriceToCents(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+}
+
+function extractProducts(node: unknown, out: CatalogProduct[]): void {
+  if (typeof node !== "object" || node === null) return;
+  const obj = node as Record<string, unknown>;
+  if (Array.isArray(obj.products)) {
+    for (const p of obj.products) {
+      if (typeof p !== "object" || p === null) continue;
+      const product = p as Record<string, unknown>;
+      const id = product.id;
+      const displayName = product.display_name;
+      if (typeof id !== "string" || typeof displayName !== "string") continue;
+      const priceInstructions = (product.price_instructions ?? {}) as Record<string, unknown>;
+      out.push({
+        productId: id,
+        displayName,
+        packaging: typeof product.packaging === "string" ? product.packaging : null,
+        imageUrl: typeof product.thumbnail === "string" ? product.thumbnail : null,
+        unitPriceCents: parsePriceToCents(priceInstructions.unit_price),
+        referencePrice: typeof priceInstructions.reference_price === "string" ? priceInstructions.reference_price : null,
+        referenceFormat: typeof priceInstructions.reference_format === "string" ? priceInstructions.reference_format : null,
+      });
+    }
+  }
+  if (Array.isArray(obj.categories)) {
+    for (const child of obj.categories) extractProducts(child, out);
+  }
+}
+
+export async function getCatalogProducts(subcategoryId: number, warehouseId: string | null): Promise<CatalogProduct[]> {
+  const detail = await getJson(categoryDetailUrl(subcategoryId, warehouseId));
+  const out: CatalogProduct[] = [];
+  extractProducts(detail, out);
+  return out;
+}
+
 export { MercadonaApiError };
