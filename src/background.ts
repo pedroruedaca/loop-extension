@@ -10,7 +10,7 @@ import { reportBasketRun, reportMercadonaStatus, upsertCatalogEntries } from "./
 import {
   getCart,
   getCatalogProducts,
-  getTopLevelSubcategoryIds,
+  getCategoryTree,
   MercadonaApiError,
   setCartLines,
   type CatalogProduct,
@@ -155,25 +155,40 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
   return results;
 }
 
-// Reads Mercadona's whole category tree and every product under it (public
-// endpoints, no session needed — see mercadona-api.ts), then bulk-upserts
-// into Loop's shared product cache. A product can be cross-listed under
-// several subcategories; de-duping by id here avoids redundant upserts.
+// Reads Mercadona's whole category tree (both levels, unconditionally —
+// see mercadona-api.ts CategoryTreeNode) and every product under each
+// level-1 subcategory (public endpoints, no session needed), then
+// bulk-upserts into Loop's shared cache. A product can be cross-listed
+// under more than one subcategory; a Set per product id merges those
+// instead of the last write clobbering the rest, which an earlier version
+// of this (that keyed a plain Map by product id per fetch) got wrong.
 async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult> {
   const session = await getStoredSession();
   const warehouseId = session?.warehouseId ?? null;
   try {
-    const subcategoryIds = await getTopLevelSubcategoryIds();
-    const perCategory = await mapWithConcurrency(subcategoryIds, CATALOG_FETCH_CONCURRENCY, (id) =>
-      getCatalogProducts(id, warehouseId).catch(() => [] as CatalogProduct[])
-    );
+    const tree = await getCategoryTree();
+    const subcategoryIds = tree.filter((n) => n.parentId != null).map((n) => n.id);
 
-    const byProductId = new Map<string, CatalogProduct>();
-    for (const products of perCategory) {
-      for (const product of products) byProductId.set(product.productId, product);
+    const perSubcategory = await mapWithConcurrency(subcategoryIds, CATALOG_FETCH_CONCURRENCY, async (subcategoryId) => ({
+      subcategoryId,
+      products: await getCatalogProducts(subcategoryId, warehouseId).catch(() => [] as CatalogProduct[]),
+    }));
+
+    const byProductId = new Map<string, CatalogProduct & { categoryIds: Set<number> }>();
+    for (const { subcategoryId, products } of perSubcategory) {
+      for (const product of products) {
+        const existing = byProductId.get(product.productId);
+        if (existing) existing.categoryIds.add(subcategoryId);
+        else byProductId.set(product.productId, { ...product, categoryIds: new Set([subcategoryId]) });
+      }
     }
     const allProducts = [...byProductId.values()];
 
+    if (allProducts.length === 0) {
+      // Still worth persisting the tree itself so the sidebar reflects
+      // Mercadona's real structure even if every product fetch failed.
+      await upsertCatalogEntries(loopOrigin, [], tree);
+    }
     for (let i = 0; i < allProducts.length; i += CATALOG_PUSH_BATCH_SIZE) {
       const batch = allProducts.slice(i, i + CATALOG_PUSH_BATCH_SIZE);
       await upsertCatalogEntries(
@@ -187,8 +202,9 @@ async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult>
           unitPriceCents: p.unitPriceCents,
           referencePrice: p.referencePrice,
           referenceFormat: p.referenceFormat,
-          categories: p.categories,
-        }))
+          categoryIds: [...p.categoryIds],
+        })),
+        i === 0 ? tree : undefined
       );
     }
 

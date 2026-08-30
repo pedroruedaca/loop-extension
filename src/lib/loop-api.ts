@@ -21,6 +21,6 @@ export function reportBasketRun(baseUrl: string, report: Record<string, unknown>
   return postJson(baseUrl, "/api/basket/runs", report);
 }
 
-export function upsertCatalogEntries(baseUrl: string, entries: Record<string, unknown>[]) {
-  return postJson(baseUrl, "/api/product-cache", { entries });
+export function upsertCatalogEntries(baseUrl: string, entries: Record<string, unknown>[], categories?: Record<string, unknown>[]) {
+  return postJson(baseUrl, "/api/product-cache", categories ? { entries, categories } : { entries });
 }

@@ -145,8 +145,6 @@ function categoryDetailUrl(id: number, warehouseId: string | null) {
   return `${MERCADONA_BASE_URL}/api/categories/${id}/?${params.toString()}`;
 }
 
-export type CatalogCategory = { id: number; name: string; order?: number };
-
 export type CatalogProduct = {
   productId: string;
   displayName: string;
@@ -155,22 +153,33 @@ export type CatalogProduct = {
   unitPriceCents: number | null;
   referencePrice: string | null;
   referenceFormat: string | null;
-  // Top-level section(s) this product self-reports under `product.categories`
-  // (level 0, e.g. {"id":12,"name":"Aceite, especias y salsas","level":0}) —
-  // not to be confused with the outer node's `categories[]` used below to
-  // recurse the tree; same key name, different meaning at this depth.
-  categories: CatalogCategory[];
 };
 
-export async function getTopLevelSubcategoryIds(): Promise<number[]> {
+// Level 0 (sections, parentId null) followed by level 1 (subcategories,
+// parentId = their section's id) — sections-before-children, since Loop's
+// ingest inserts these in array order and product_categories rows FK into
+// them. Deliberately not the level-2 nodes products actually live under
+// (see the module comment): Mercadona's own site browses by level 1, and
+// tagging a product against the level-1 call it was fetched under (in
+// getCatalogProducts below) is exact, unlike trusting a product's own
+// self-reported `categories[]` (level 0 only, and — per a live sync that
+// came up short — not reliably present for every section).
+export type CategoryTreeNode = { id: number; name: string; order?: number; parentId?: number };
+
+export async function getCategoryTree(): Promise<CategoryTreeNode[]> {
   const raw = (await getJson(`${MERCADONA_BASE_URL}/api/categories/`)) as {
-    results?: { categories?: { id: number }[] }[];
+    results?: { id: number; name: string; order?: number; categories?: { id: number; name: string; order?: number }[] }[];
   };
-  const ids: number[] = [];
+  const nodes: CategoryTreeNode[] = [];
   for (const section of raw.results ?? []) {
-    for (const sub of section.categories ?? []) ids.push(sub.id);
+    nodes.push({ id: section.id, name: section.name, order: section.order });
   }
-  return ids;
+  for (const section of raw.results ?? []) {
+    for (const sub of section.categories ?? []) {
+      nodes.push({ id: sub.id, name: sub.name, order: sub.order, parentId: section.id });
+    }
+  }
+  return nodes;
 }
 
 function parsePriceToCents(value: unknown): number | null {
@@ -190,15 +199,6 @@ function extractProducts(node: unknown, out: CatalogProduct[]): void {
       const displayName = product.display_name;
       if (typeof id !== "string" || typeof displayName !== "string") continue;
       const priceInstructions = (product.price_instructions ?? {}) as Record<string, unknown>;
-      const rawCategories = Array.isArray(product.categories) ? product.categories : [];
-      const categories: CatalogCategory[] = [];
-      for (const c of rawCategories) {
-        if (typeof c !== "object" || c === null) continue;
-        const cat = c as Record<string, unknown>;
-        if (typeof cat.id === "number" && typeof cat.name === "string") {
-          categories.push({ id: cat.id, name: cat.name, order: typeof cat.order === "number" ? cat.order : undefined });
-        }
-      }
       out.push({
         productId: id,
         displayName,
@@ -207,7 +207,6 @@ function extractProducts(node: unknown, out: CatalogProduct[]): void {
         unitPriceCents: parsePriceToCents(priceInstructions.unit_price),
         referencePrice: typeof priceInstructions.reference_price === "string" ? priceInstructions.reference_price : null,
         referenceFormat: typeof priceInstructions.reference_format === "string" ? priceInstructions.reference_format : null,
-        categories,
       });
     }
   }
