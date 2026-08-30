@@ -187,6 +187,7 @@ async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult>
           unitPriceCents: p.unitPriceCents,
           referencePrice: p.referencePrice,
           referenceFormat: p.referenceFormat,
+          categories: p.categories,
         }))
       );
     }

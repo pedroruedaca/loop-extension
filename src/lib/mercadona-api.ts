@@ -145,6 +145,8 @@ function categoryDetailUrl(id: number, warehouseId: string | null) {
   return `${MERCADONA_BASE_URL}/api/categories/${id}/?${params.toString()}`;
 }
 
+export type CatalogCategory = { id: number; name: string; order?: number };
+
 export type CatalogProduct = {
   productId: string;
   displayName: string;
@@ -153,6 +155,11 @@ export type CatalogProduct = {
   unitPriceCents: number | null;
   referencePrice: string | null;
   referenceFormat: string | null;
+  // Top-level section(s) this product self-reports under `product.categories`
+  // (level 0, e.g. {"id":12,"name":"Aceite, especias y salsas","level":0}) —
+  // not to be confused with the outer node's `categories[]` used below to
+  // recurse the tree; same key name, different meaning at this depth.
+  categories: CatalogCategory[];
 };
 
 export async function getTopLevelSubcategoryIds(): Promise<number[]> {
@@ -183,6 +190,15 @@ function extractProducts(node: unknown, out: CatalogProduct[]): void {
       const displayName = product.display_name;
       if (typeof id !== "string" || typeof displayName !== "string") continue;
       const priceInstructions = (product.price_instructions ?? {}) as Record<string, unknown>;
+      const rawCategories = Array.isArray(product.categories) ? product.categories : [];
+      const categories: CatalogCategory[] = [];
+      for (const c of rawCategories) {
+        if (typeof c !== "object" || c === null) continue;
+        const cat = c as Record<string, unknown>;
+        if (typeof cat.id === "number" && typeof cat.name === "string") {
+          categories.push({ id: cat.id, name: cat.name, order: typeof cat.order === "number" ? cat.order : undefined });
+        }
+      }
       out.push({
         productId: id,
         displayName,
@@ -191,6 +207,7 @@ function extractProducts(node: unknown, out: CatalogProduct[]): void {
         unitPriceCents: parsePriceToCents(priceInstructions.unit_price),
         referencePrice: typeof priceInstructions.reference_price === "string" ? priceInstructions.reference_price : null,
         referenceFormat: typeof priceInstructions.reference_format === "string" ? priceInstructions.reference_format : null,
+        categories,
       });
     }
   }
