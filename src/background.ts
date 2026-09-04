@@ -141,6 +141,27 @@ async function handleConfirmPrepare(
 
 const CATALOG_FETCH_CONCURRENCY = 6;
 const CATALOG_PUSH_BATCH_SIZE = 200;
+// One retry beyond the initial attempt, for a subcategory whose request
+// itself threw (network hiccup, rate limit, transient 5xx) — not for one
+// that resolved normally with zero products, which is left alone as a
+// genuinely empty Mercadona category. Without this, a transient failure on
+// any of the ~150 per-sync requests reads identically to "this category has
+// nothing in it" until the next full manual sync.
+const CATALOG_FETCH_RETRIES = 1;
+
+async function fetchSubcategoryProducts(
+  subcategoryId: number,
+  warehouseId: string | null
+): Promise<{ subcategoryId: number; products: CatalogProduct[]; failed: boolean }> {
+  for (let attempt = 0; attempt <= CATALOG_FETCH_RETRIES; attempt++) {
+    try {
+      return { subcategoryId, products: await getCatalogProducts(subcategoryId, warehouseId), failed: false };
+    } catch {
+      if (attempt === CATALOG_FETCH_RETRIES) return { subcategoryId, products: [], failed: true };
+    }
+  }
+  return { subcategoryId, products: [], failed: true };
+}
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -169,10 +190,10 @@ async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult>
     const tree = await getCategoryTree();
     const subcategoryIds = tree.filter((n) => n.parentId != null).map((n) => n.id);
 
-    const perSubcategory = await mapWithConcurrency(subcategoryIds, CATALOG_FETCH_CONCURRENCY, async (subcategoryId) => ({
-      subcategoryId,
-      products: await getCatalogProducts(subcategoryId, warehouseId).catch(() => [] as CatalogProduct[]),
-    }));
+    const perSubcategory = await mapWithConcurrency(subcategoryIds, CATALOG_FETCH_CONCURRENCY, (subcategoryId) =>
+      fetchSubcategoryProducts(subcategoryId, warehouseId)
+    );
+    const categoriesFailed = perSubcategory.filter((r) => r.failed).length;
 
     const byProductId = new Map<string, CatalogProduct & { categoryIds: Set<number> }>();
     for (const { subcategoryId, products } of perSubcategory) {
@@ -208,12 +229,18 @@ async function handleSyncCatalog(loopOrigin: string): Promise<SyncCatalogResult>
       );
     }
 
-    return { status: "ok", categoriesScanned: subcategoryIds.length, productsUpserted: allProducts.length };
+    return {
+      status: "ok",
+      categoriesScanned: subcategoryIds.length,
+      productsUpserted: allProducts.length,
+      categoriesFailed,
+    };
   } catch (err) {
     return {
       status: "error",
       categoriesScanned: 0,
       productsUpserted: 0,
+      categoriesFailed: 0,
       errorMessage: err instanceof Error ? err.message : "unknown_error",
     };
   }

@@ -38,6 +38,10 @@ export type SyncCatalogResult = {
   status: "ok" | "error";
   categoriesScanned: number;
   productsUpserted: number;
+  // Subcategories whose product fetch still threw after the built-in retry
+  // (see CATALOG_FETCH_RETRIES in background.ts) — distinct from a category
+  // that fetched fine and genuinely has zero products right now.
+  categoriesFailed: number;
   errorMessage?: string;
 };
 
