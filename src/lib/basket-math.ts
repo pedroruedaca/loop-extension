@@ -3,7 +3,7 @@
 // new quantity = whatever's already in the live cart + the due item's
 // recurring quantity, so a user's own manual cart additions survive a
 // basket-build (see [[project-loop]]).
-import type { CartLine } from "./mercadona-api";
+import type { CartLine } from "./cart-lines";
 import type { ConfirmPrepareLine, ProcessedItem } from "../types";
 
 export function computeCartUpdates(
@@ -38,7 +38,8 @@ export function computeCartUpdates(
 export function foldCartLines(currentLines: CartLine[], updatedLines: CartLine[]): CartLine[] {
   const updatesByProduct = new Map(updatedLines.map((l) => [l.productId, l.quantity]));
   const folded = currentLines.map((line) =>
-    updatesByProduct.has(line.productId) ? { productId: line.productId, quantity: updatesByProduct.get(line.productId)! } : line
+    // Spread keeps the line's existing `sources` so the PUT doesn't erase them.
+    updatesByProduct.has(line.productId) ? { ...line, quantity: updatesByProduct.get(line.productId)! } : line
   );
   const existingProducts = new Set(currentLines.map((l) => l.productId));
   for (const update of updatedLines) {

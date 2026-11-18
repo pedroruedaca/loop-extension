@@ -6,6 +6,7 @@
 // "the extension reports back" framing already baked into Loop's schema
 // comments (users.mercadonaStatus, basket_runs).
 import { computeCartUpdates, foldCartLines } from "./lib/basket-math";
+import { checkCartDrift, describeDrift, hasDrift, type CartLine } from "./lib/cart-lines";
 import { reportBasketRun, reportMercadonaStatus, upsertCatalogEntries } from "./lib/loop-api";
 import {
   getCart,
@@ -109,19 +110,53 @@ async function handleConfirmPrepare(
 
   try {
     const cart = await getCart(session.token, session.customerId, session.warehouseId);
+
+    // The PUT replaces the whole cart. If we couldn't read every existing line
+    // (or the response shape changed), writing would silently delete the
+    // user's own items — refuse and report instead.
+    if (!cart.hasLines || cart.unreadableLineCount > 0) {
+      const result: ConfirmPrepareResult = {
+        status: "error",
+        itemsProcessed: [],
+        requestPayload: null,
+        responseBody: cart.raw,
+        errorMessage: !cart.hasLines ? "cart_shape_unrecognized" : `cart_unreadable_lines:${cart.unreadableLineCount}`,
+      };
+      await reportBasketRun(loopOrigin, { plannedBasketId, ...result }).catch(() => null);
+      return result;
+    }
+
     const { lines: updates, processed } = computeCartUpdates(cart.lines, lines);
     const fullLines = foldCartLines(cart.lines, updates);
     const requestPayload = { id: cart.id, lines: fullLines };
     const updated = await setCartLines(session.token, session.customerId, session.warehouseId, cart.id, fullLines);
 
+    // Check the cart actually holds what we sent. Use the PUT response when it
+    // echoes a readable cart; otherwise read it back once.
+    let actualLines: CartLine[] | null = null;
+    let totalCents = updated.totalCents;
+    if (updated.hasLines && updated.unreadableLineCount === 0) {
+      actualLines = updated.lines;
+    } else {
+      const after = await getCart(session.token, session.customerId, session.warehouseId).catch(() => null);
+      if (after && after.hasLines && after.unreadableLineCount === 0) {
+        actualLines = after.lines;
+        totalCents = after.totalCents ?? totalCents;
+      }
+    }
+    const drift = actualLines ? checkCartDrift(fullLines, actualLines) : null;
+    const drifted = drift !== null && hasDrift(drift);
+
     const result: ConfirmPrepareResult = {
-      status: "ok",
+      status: drifted ? "partial" : "ok",
       itemsProcessed: processed,
       requestPayload,
       responseStatus: 200,
       responseBody: updated.raw,
-      cartTotalCents: updated.totalCents ?? undefined,
-      driftDetected: false,
+      cartTotalCents: totalCents ?? undefined,
+      driftDetected: drifted,
+      ...(drifted ? { errorMessage: describeDrift(drift!) } : {}),
+      ...(drift === null ? { errorMessage: "cart_unverified" } : {}),
     };
     await reportBasketRun(loopOrigin, { plannedBasketId, ...result }).catch(() => null);
     return result;

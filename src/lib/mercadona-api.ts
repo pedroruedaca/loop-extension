@@ -15,11 +15,18 @@
 
 export const MERCADONA_BASE_URL = "https://tienda.mercadona.es";
 
-export type CartLine = { productId: string; quantity: number };
+import { parseCartLines, type CartLine } from "./cart-lines";
+
+export type { CartLine };
 
 export type MercadonaCart = {
   id: string;
   lines: CartLine[];
+  // Lines present in the response that we couldn't parse. Must be 0 before any
+  // PUT: the PUT replaces the full list, so an unread line would be deleted.
+  unreadableLineCount: number;
+  // False when the response carried no `lines` array at all.
+  hasLines: boolean;
   totalCents: number | null;
   raw: unknown;
 };
@@ -55,24 +62,6 @@ async function request(url: string, token: string, init?: RequestInit) {
   return body;
 }
 
-function extractLineProductId(line: unknown): string | null {
-  if (typeof line !== "object" || line === null) return null;
-  const l = line as Record<string, unknown>;
-  if (typeof l.product === "object" && l.product !== null) {
-    const id = (l.product as Record<string, unknown>).id;
-    if (typeof id === "string") return id;
-  }
-  if (typeof l.product_id === "string") return l.product_id;
-  if (typeof l.productId === "string") return l.productId;
-  return null;
-}
-
-function extractLineQuantity(line: unknown): number | null {
-  if (typeof line !== "object" || line === null) return null;
-  const q = (line as Record<string, unknown>).quantity;
-  return typeof q === "number" ? q : null;
-}
-
 function extractTotalCents(body: unknown): number | null {
   if (typeof body !== "object" || body === null) return null;
   const summary = (body as Record<string, unknown>).summary;
@@ -85,15 +74,20 @@ function extractTotalCents(body: unknown): number | null {
 
 export async function getCart(token: string, customerId: string, warehouseId: string | null): Promise<MercadonaCart> {
   const raw = await request(cartUrl(customerId, warehouseId), token);
-  const rawLines = Array.isArray((raw as Record<string, unknown>)?.lines) ? (raw as { lines: unknown[] }).lines : [];
-  const lines: CartLine[] = [];
-  for (const line of rawLines) {
-    const productId = extractLineProductId(line);
-    const quantity = extractLineQuantity(line);
-    if (productId != null && quantity != null) lines.push({ productId, quantity });
-  }
   const id = typeof (raw as Record<string, unknown>)?.id === "string" ? ((raw as Record<string, unknown>).id as string) : customerId;
-  return { id, lines, totalCents: extractTotalCents(raw), raw };
+  return toCart(id, raw);
+}
+
+function toCart(id: string, raw: unknown): MercadonaCart {
+  const parsed = parseCartLines(raw);
+  return {
+    id,
+    lines: parsed.lines,
+    unreadableLineCount: parsed.unreadableCount,
+    hasLines: parsed.hasLines,
+    totalCents: extractTotalCents(raw),
+    raw,
+  };
 }
 
 export async function setCartLines(
@@ -105,17 +99,11 @@ export async function setCartLines(
 ): Promise<MercadonaCart> {
   const body = {
     id: cartId,
-    lines: lines.map((l) => ({ quantity: l.quantity, product_id: l.productId, sources: [] })),
+    // Pass back whatever `sources` the line already had; only brand-new lines get [].
+    lines: lines.map((l) => ({ quantity: l.quantity, product_id: l.productId, sources: l.sources ?? [] })),
   };
   const raw = await request(cartUrl(customerId, warehouseId), token, { method: "PUT", body: JSON.stringify(body) });
-  const rawLines = Array.isArray((raw as Record<string, unknown>)?.lines) ? (raw as { lines: unknown[] }).lines : [];
-  const resultLines: CartLine[] = [];
-  for (const line of rawLines) {
-    const productId = extractLineProductId(line);
-    const quantity = extractLineQuantity(line);
-    if (productId != null && quantity != null) resultLines.push({ productId, quantity });
-  }
-  return { id: cartId, lines: resultLines, totalCents: extractTotalCents(raw), raw };
+  return toCart(cartId, raw);
 }
 
 // --- Catalog (categories + products) ---
