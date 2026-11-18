@@ -21,6 +21,10 @@ export function reportBasketRun(baseUrl: string, report: Record<string, unknown>
   return postJson(baseUrl, "/api/basket/runs", report);
 }
 
-export function upsertCatalogEntries(baseUrl: string, entries: Record<string, unknown>[], categories?: Record<string, unknown>[]) {
-  return postJson(baseUrl, "/api/product-cache", categories ? { entries, categories } : { entries });
+export async function upsertCatalogEntries(baseUrl: string, entries: Record<string, unknown>[], categories?: Record<string, unknown>[]) {
+  const result = await postJson(baseUrl, "/api/product-cache", categories ? { entries, categories } : { entries });
+  if (!result.ok || result.body?.ok !== true || result.body?.upserted !== entries.length) {
+    throw new Error(`catalog_upload_failed: HTTP ${result.status}; expected ${entries.length} products, acknowledged ${result.body?.upserted ?? "none"}`);
+  }
+  return result;
 }
